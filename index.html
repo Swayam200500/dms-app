@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver Monitoring System</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        body { margin: 0; background-color: #121212; color: #fff; font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+        #container { position: relative; width: 90vw; max-width: 640px; aspect-ratio: 4/3; border: 3px solid #333; border-radius: 12px; overflow: hidden; }
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        #status-box { margin-top: 15px; width: 85vw; max-width: 600px; padding: 16px; border-radius: 8px; background: rgba(0,0,0,0.85); border-left: 6px solid #00ffcc; font-size: 16px; font-weight: bold; line-height: 1.5; box-sizing: border-border-box; }
+    </style>
+</head>
+<body>
+    <h2>Driver Monitoring System</h2>
+    <div id="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+    <div id="status-box">INITIALIZING ENGINE...</div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusBox = document.getElementById('status-box');
+
+        let facialLossStartTime = 0;
+        let phoneDetected = false;
+        let cocoModel = null;
+
+        cocoSsd.load().then(model => {
+            cocoModel = model;
+            detectPhone();
+        });
+
+        async function detectPhone() {
+            if (cocoModel && videoElement.readyState === 4) {
+                const predictions = await cocoModel.detect(videoElement);
+                phoneDetected = predictions.some(p => p.class === 'cell phone' && p.score > 0.40);
+            }
+            setTimeout(detectPhone, 500);
+        }
+
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function calculateEAR(landmarks, left) {
+            const p = left ? [33, 160, 158, 133, 153, 144] : [263, 387, 385, 362, 380, 373];
+            const v1 = getDistance(landmarks[p[1]], landmarks[p[5]]);
+            const v2 = getDistance(landmarks[p[2]], landmarks[p[4]]);
+            const h = getDistance(landmarks[p[0]], landmarks[p[3]]);
+            return (v1 + v2) / (2.0 * h);
+        }
+
+        function calculateMAR(landmarks) {
+            const vertical = getDistance(landmarks[13], landmarks[14]);
+            const horizontal = getDistance(landmarks[78], landmarks[308]);
+            return vertical / horizontal;
+        }
+
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+
+        faceMesh.onResults((results) => {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                facialLossStartTime = 0;
+                const landmarks = results.multiFaceLandmarks[0];
+
+                const leftEAR = calculateEAR(landmarks, true);
+                const rightEAR = calculateEAR(landmarks, false);
+                const ear = (leftEAR + rightEAR) / 2.0;
+                const mar = calculateMAR(landmarks);
+
+                if (phoneDetected) {
+                    updateStatus("STATE: DISTRACTED (PHONE USE)", "Detected mobile phone", "Critical Alert", "#ff0055");
+                } else if (ear < 0.17) {
+                    updateStatus("STATE: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (< 0.17)`, "Sound Alarm", "#ff3300");
+                } else if (mar > 0.50) {
+                    updateStatus("STATE: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50)`, "Rest Warning", "#ffcc00");
+                } else {
+                    updateStatus("STATE: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Normal", "#00ffcc");
+                }
+            } else {
+                const currentTime = Date.now();
+                if (facialLossStartTime === 0) {
+                    facialLossStartTime = currentTime;
+                } else if (currentTime - facialLossStartTime > 2500) {
+                    updateStatus("CRITICAL: FACIAL LOSS / HEAD TURNED BACK", "No face tracked > 2.5s", "Loud Alert Warning", "#ff0000");
+                    canvasCtx.restore();
+                    return;
+                }
+                updateStatus("TRACKING FACE...", "Searching for driver landmarks", "Monitoring", "#aaaaaa");
+            }
+            canvasCtx.restore();
+        });
+
+        function updateStatus(state, metric, action, color) {
+            statusBox.style.borderColor = color;
+            statusBox.innerHTML = `<span style="color:${color}">${state}</span><br>${metric}<br>Action: ${action}`;
+        }
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await faceMesh.send({ image: videoElement }); },
+            width: 640, height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
