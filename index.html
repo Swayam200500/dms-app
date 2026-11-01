@@ -34,6 +34,7 @@
         let phoneDetected = false;
         let cocoModel = null;
 
+        // Load COCO-SSD object detection for phone state
         cocoSsd.load().then(model => {
             cocoModel = model;
             detectPhone();
@@ -65,6 +66,38 @@
             return vertical / horizontal;
         }
 
+        // Software-only Seatbelt Detection (Samples dark strap pixels along shoulder-to-torso line)
+        function checkSeatbeltFastened(landmarks) {
+            if (!landmarks || landmarks.length === 0) return true;
+            
+            // Estimate shoulder position from chin landmark (#152)
+            const chin = landmarks[152];
+            const startX = Math.floor((1 - chin.x) * canvasElement.width);
+            const startY = Math.floor(chin.y * canvasElement.height) + 40;
+            const endX = startX - 120;
+            const endY = startY + 160;
+
+            let darkPixels = 0;
+            const samples = 15;
+
+            try {
+                for (let i = 0; i <= samples; i++) {
+                    const sampleX = Math.floor(startX + (endX - startX) * (i / samples));
+                    const sampleY = Math.floor(startY + (endY - startY) * (i / samples));
+
+                    if (sampleX >= 0 && sampleX < canvasElement.width && sampleY >= 0 && sampleY < canvasElement.height) {
+                        const pixel = canvasCtx.getImageData(sampleX, sampleY, 1, 1).data;
+                        const brightness = 0.299 * pixel[0] + 0.587 * pixel[1] + 0.114 * pixel[2];
+                        if (brightness < 85) darkPixels++; // Dark strap threshold
+                    }
+                }
+            } catch (e) {
+                return true; // Fallback to avoid false alert on canvas access edge cases
+            }
+
+            return (darkPixels / samples) >= 0.25;
+        }
+
         const faceMesh = new FaceMesh({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
         });
@@ -75,6 +108,9 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
+            // Draw camera feed to canvas for pixel sampling
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
                 facialLossStartTime = 0;
                 const landmarks = results.multiFaceLandmarks[0];
@@ -83,22 +119,26 @@
                 const rightEAR = calculateEAR(landmarks, false);
                 const ear = (leftEAR + rightEAR) / 2.0;
                 const mar = calculateMAR(landmarks);
+                const isSeatbeltOn = checkSeatbeltFastened(landmarks);
 
-                if (phoneDetected) {
-                    updateStatus("STATE: DISTRACTED (PHONE USE)", "Detected mobile phone", "Critical Alert", "#ff0055");
+                // Evaluation Hierarchy across 6 States:
+                if (!isSeatbeltOn) {
+                    updateStatus("STATE 6: NO SEATBELT DETECTED", "Seatbelt strap not detected across chest", "Fasten Seatbelt", "#ff00ea");
+                } else if (phoneDetected) {
+                    updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Detected mobile phone", "Critical Alert", "#ff0055");
                 } else if (ear < 0.17) {
-                    updateStatus("STATE: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (< 0.17)`, "Sound Alarm", "#ff3300");
+                    updateStatus("STATE 2: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (< 0.17)`, "Sound Alarm", "#ff3300");
                 } else if (mar > 0.50) {
-                    updateStatus("STATE: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50)`, "Rest Warning", "#ffcc00");
+                    updateStatus("STATE 3: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50)`, "Rest Warning", "#ffcc00");
                 } else {
-                    updateStatus("STATE: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Normal", "#00ffcc");
+                    updateStatus("STATE 1: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)} | Seatbelt: OK`, "Normal", "#00ffcc");
                 }
             } else {
                 const currentTime = Date.now();
                 if (facialLossStartTime === 0) {
                     facialLossStartTime = currentTime;
                 } else if (currentTime - facialLossStartTime > 2500) {
-                    updateStatus("CRITICAL: FACIAL LOSS / HEAD TURNED BACK", "No face tracked > 2.5s", "Loud Alert Warning", "#ff0000");
+                    updateStatus("STATE 4: CRITICAL FACIAL LOSS / HEAD TURNED", "No face tracked > 2.5s", "Loud Alert Warning", "#ff0000");
                     canvasCtx.restore();
                     return;
                 }
