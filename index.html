@@ -12,7 +12,15 @@
     <style>
         body { margin: 0; background-color: #121212; color: #fff; font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
         #container { position: relative; width: 90vw; max-width: 640px; aspect-ratio: 4/3; border: 3px solid #333; border-radius: 12px; overflow: hidden; }
-        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        video, canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* FIX: Prevents cropping/zooming, shows true full camera view */
+    transform: scaleX(-1);
+}
         #status-box { margin-top: 15px; width: 85vw; max-width: 600px; padding: 16px; border-radius: 8px; background: rgba(0,0,0,0.85); border-left: 6px solid #00ffcc; font-size: 16px; font-weight: bold; line-height: 1.5; box-sizing: border-box; }
     </style>
 </head>
