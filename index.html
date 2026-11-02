@@ -10,18 +10,51 @@
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
     <style>
-        body { margin: 0; background-color: #121212; color: #fff; font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
-        #container { position: relative; width: 90vw; max-width: 640px; aspect-ratio: 4/3; border: 3px solid #333; border-radius: 12px; overflow: hidden; }
-        video, canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain; /* FIX: Prevents cropping/zooming, shows true full camera view */
-    transform: scaleX(-1);
-}
-        #status-box { margin-top: 15px; width: 85vw; max-width: 600px; padding: 16px; border-radius: 8px; background: rgba(0,0,0,0.85); border-left: 6px solid #00ffcc; font-size: 16px; font-weight: bold; line-height: 1.5; box-sizing: border-box; }
+        body { 
+            margin: 0; 
+            background-color: #121212; 
+            color: #fff; 
+            font-family: Arial, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+        }
+        #container { 
+            position: relative; 
+            width: 90vw; 
+            max-width: 640px; 
+            aspect-ratio: 4/3; 
+            border: 3px solid #333; 
+            border-radius: 12px; 
+            overflow: hidden; 
+            background: #000;
+        }
+        /* Overrides MediaPipe inline video styles to prevent face zooming/cropping */
+        video, canvas { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100% !important; 
+            height: 100% !important; 
+            object-fit: contain !important; 
+            object-position: center !important;
+            transform: scaleX(-1); 
+        }
+        #status-box { 
+            margin-top: 15px; 
+            width: 85vw; 
+            max-width: 600px; 
+            padding: 16px; 
+            border-radius: 8px; 
+            background: rgba(0,0,0,0.85); 
+            border-left: 6px solid #00ffcc; 
+            font-size: 16px; 
+            font-weight: bold; 
+            line-height: 1.5; 
+            box-sizing: border-box; 
+        }
     </style>
 </head>
 <body>
@@ -42,7 +75,7 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        // Smooth history filter to avoid split-second seatbelt flickering
+        // Smooth seatbelt state buffer to prevent flickering
         let seatbeltBuffer = [true, true, true, true, true];
 
         cocoSsd.load().then(model => {
@@ -78,7 +111,7 @@
             return vertical / horizontal;
         }
 
-        // Dynamic Torso Luminance Seatbelt Sampling
+        // Software Luminance Seatbelt Sampling Algorithm
         function checkSeatbeltFastened(landmarks, w, h) {
             if (!landmarks || landmarks.length < 153) return true;
 
@@ -104,7 +137,7 @@
                         const b = imgData[idx + 2];
                         const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
                         
-                        if (luminance < 115) { // Dark strap luminance threshold
+                        if (luminance < 115) {
                             darkPixels++;
                         }
                     }
@@ -132,7 +165,7 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
             
-            // Render video frame onto canvas natively to keep 4:3 unstretched proportions
+            // Draw camera frame natively onto canvas
             canvasCtx.drawImage(results.image, 0, 0, w, h);
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
@@ -146,7 +179,7 @@
                 
                 const isSeatbeltOn = checkSeatbeltFastened(landmarks, w, h);
 
-                // Visual debug vector line across driver torso
+                // Visual Debug Vector Line
                 const chin = landmarks[152];
                 const sX = chin.x * w;
                 const sY = chin.y * h + (h * 0.08);
@@ -160,9 +193,9 @@
                 canvasCtx.lineWidth = 4;
                 canvasCtx.stroke();
 
-                // 6-State Prioritized Rule Engine
+                // 6-State Prioritized Decision Engine
                 if (!isSeatbeltOn) {
-                    updateStatus("STATE 6: NO SEATBELT DETECTED", `Torso Strap Missing | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt", "#ff00ea");
+                    updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
                     updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Detected mobile phone", "Critical Alert", "#ff0055");
                 } else if (ear < 0.17) {
@@ -170,7 +203,7 @@
                 } else if (mar > 0.50) {
                     updateStatus("STATE 3: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50)`, "Rest Warning", "#ffcc00");
                 } else {
-                    updateStatus("STATE 1: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)} | Seatbelt: OK`, "Normal", "#00ffcc");
+                    updateStatus("STATE 1: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)} | Seatbelt: OK`, "Normal Operating Mode", "#00ffcc");
                 }
             } else {
                 const currentTime = Date.now();
