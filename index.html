@@ -70,7 +70,6 @@
         const canvasCtx = canvasElement.getContext('2d');
         const statusBox = document.getElementById('status-box');
 
-        // Dedicated offscreen canvas for raw video pixel inspection
         const sampleCanvas = document.createElement('canvas');
         const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -78,8 +77,8 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        // Smooth seatbelt buffer (requires consistent detection to change state)
-        let seatbeltBuffer = [false, false, false];
+        // Strict 5-frame consensus buffer
+        let seatbeltBuffer = [false, false, false, false, false];
 
         cocoSsd.load().then(model => {
             cocoModel = model;
@@ -114,46 +113,49 @@
             return vertical / horizontal;
         }
 
-        // ACCURATE RAW-FRAME SEATBELT SAMPLER
+        // --- ACCURATE CONTRAST-DELTA SEATBELT SAMPLING ---
         function checkSeatbeltFastened(landmarks, w, h) {
             if (!landmarks || landmarks.length < 153) return false;
 
-            // 1. Ensure sample canvas matches frame size
             if (sampleCanvas.width !== w || sampleCanvas.height !== h) {
                 sampleCanvas.width = w;
                 sampleCanvas.height = h;
             }
 
-            // 2. Snapshot current raw video frame before drawing HUD lines
             sampleCtx.drawImage(videoElement, 0, 0, w, h);
 
             const chin = landmarks[152];
             const startX = Math.floor(chin.x * w);
-            const startY = Math.floor(chin.y * h) + Math.floor(h * 0.08);
-            const endX = Math.max(10, startX - Math.floor(w * 0.32));
-            const endY = Math.min(h - 10, startY + Math.floor(h * 0.38));
+            const startY = Math.floor(chin.y * h) + Math.floor(h * 0.12);
+            const endX = Math.max(10, startX - Math.floor(w * 0.35));
+            const endY = Math.min(h - 10, startY + Math.floor(h * 0.40));
 
-            let darkPixels = 0;
-            const totalSamples = 20;
+            let darkStrapHits = 0;
+            const samples = 20;
 
             try {
                 const imgData = sampleCtx.getImageData(0, 0, w, h).data;
-                for (let i = 0; i <= totalSamples; i++) {
-                    const sx = Math.floor(startX + (endX - startX) * (i / totalSamples));
-                    const sy = Math.floor(startY + (endY - startY) * (i / totalSamples));
+                
+                // Sample ambient shirt background brightness (offset to the right of the chin)
+                const bgX = Math.min(w - 1, startX + Math.floor(w * 0.15));
+                const bgY = startY;
+                const bgIdx = (bgY * w + bgX) * 4;
+                const bgLuminance = (0.299 * imgData[bgIdx]) + (0.587 * imgData[bgIdx+1]) + (0.114 * imgData[bgIdx+2]);
+
+                for (let i = 0; i <= samples; i++) {
+                    const sx = Math.floor(startX + (endX - startX) * (i / samples));
+                    const sy = Math.floor(startY + (endY - startY) * (i / samples));
 
                     if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
                         const idx = (sy * w + sx) * 4;
                         const r = imgData[idx];
                         const g = imgData[idx + 1];
                         const b = imgData[idx + 2];
+                        const lineLuminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
 
-                        // Perceptual Luminance Formula
-                        const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
-
-                        // Strict threshold: Seatbelt strap must be dark (Luminance < 95)
-                        if (luminance < 95) {
-                            darkPixels++;
+                        // Seatbelt requirement: Pixel must be very dark AND significantly darker than ambient shirt background
+                        if (lineLuminance < 75 && (bgLuminance - lineLuminance) > 35) {
+                            darkStrapHits++;
                         }
                     }
                 }
@@ -161,13 +163,14 @@
                 return false;
             }
 
-            // Requires at least 25% of sampled points to hit dark strap pixels
-            const rawBeltOn = (darkPixels / totalSamples) >= 0.25;
+            // Requires at least 35% continuous strap match along vector
+            const rawBeltOn = (darkStrapHits / samples) >= 0.35;
 
-            // Buffer majority vote over last 3 frames to prevent false triggers
             seatbeltBuffer.shift();
             seatbeltBuffer.push(rawBeltOn);
-            return seatbeltBuffer.filter(Boolean).length >= 2;
+            
+            // Requires 4 out of 5 frames to confirm strap presence
+            return seatbeltBuffer.filter(Boolean).length >= 4;
         }
 
         const faceMesh = new FaceMesh({
@@ -183,7 +186,6 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
             
-            // Render webcam video feed
             canvasCtx.drawImage(results.image, 0, 0, w, h);
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
@@ -195,15 +197,14 @@
                 const ear = (leftEAR + rightEAR) / 2.0;
                 const mar = calculateMAR(landmarks);
                 
-                // Sample raw video frame for seatbelt strap
                 const isSeatbeltOn = checkSeatbeltFastened(landmarks, w, h);
 
-                // Draw Visual Debug Scan Vector
+                // Draw Visual Scan Vector
                 const chin = landmarks[152];
                 const sX = chin.x * w;
-                const sY = chin.y * h + (h * 0.08);
-                const eX = Math.max(10, sX - (w * 0.32));
-                const eY = Math.min(h - 10, sY + (h * 0.38));
+                const sY = chin.y * h + (h * 0.12);
+                const eX = Math.max(10, sX - (w * 0.35));
+                const eY = Math.min(h - 10, sY + (h * 0.40));
 
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(sX, sY);
@@ -212,7 +213,6 @@
                 canvasCtx.lineWidth = 4;
                 canvasCtx.stroke();
 
-                // Prioritized 6-State Logic Hierarchy
                 if (!isSeatbeltOn) {
                     updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
