@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Driver Monitoring System</title>
     <link rel="manifest" href="manifest.json">
+    <!-- MediaPipe & TensorFlow CDN Dependencies -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
@@ -12,30 +13,40 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
-            background-color: #121212; 
+            background-color: #0f172a; 
             color: #fff; 
-            font-family: Arial, sans-serif; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
             display: flex; 
             flex-direction: column; 
             align-items: center; 
             justify-content: flex-start; 
             min-height: 100vh; 
-            padding-top: 20px;
+            padding: 16px 12px;
         }
-        h2 { margin-bottom: 12px; font-size: 18px; text-transform: uppercase; letter-spacing: 1px; color: #38bdf8; }
+        h2 { 
+            margin-bottom: 12px; 
+            font-size: 18px; 
+            color: #38bdf8; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            text-align: center;
+        }
         
+        /* LOCKED ASPECT RATIO CONTAINER — PREVENTS LAYOUT SHIFT */
         #container { 
             position: relative; 
-            width: 90vw; 
-            max-width: 640px; 
+            width: 100%; 
+            max-width: 500px; 
             aspect-ratio: 4/3; 
-            border: 3px solid #333; 
+            border: 2px solid #334155; 
             border-radius: 12px; 
             overflow: hidden; 
-            background: #000;
+            background-color: #000;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
             flex-shrink: 0;
         }
         
+        /* UN-STRETCHED PROPORTIONAL CAMERA DISPLAY */
         video, canvas { 
             position: absolute; 
             top: 0; 
@@ -47,43 +58,45 @@
             transform: scaleX(-1); 
         }
         
-        /* FIXED LOCKED BOX UI — NO JUMPING / NO SHIFTING */
+        /* RIGID STATUS BOX — PREVENTS CRASH-LIKE UI JUMPING */
         #status-box { 
-            margin-top: 15px; 
-            width: 90vw; 
-            max-width: 640px; 
-            height: 125px; /* Locked fixed height prevents jumping */
+            margin-top: 14px; 
+            width: 100%; 
+            max-width: 500px; 
+            height: 115px; /* Locked fixed height */
             padding: 14px 16px; 
             border-radius: 8px; 
-            background: rgba(0,0,0,0.85); 
+            background: #1e293b; 
             border-left: 6px solid #00ffcc; 
-            box-sizing: border-box;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             overflow: hidden;
         }
         
-        .state-title { font-size: 15px; font-weight: bold; line-height: 1.2; margin-bottom: 4px; }
-        .metrics-line { font-size: 13px; color: #cbd5e1; line-height: 1.3; margin-bottom: 4px; }
-        .action-line { font-size: 13px; color: #fff; line-height: 1.3; font-weight: 600; }
+        .state-title { font-size: 16px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.2; margin-bottom: 4px; }
+        .metrics-line { font-size: 13px; color: #94a3b8; line-height: 1.3; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .action-line { font-size: 13px; color: #f8fafc; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
-    <h2>Driver Monitoring System</h2>
+
+    <h2>Driver Safety Engine (30 FPS)</h2>
     <div id="container">
-        <video id="webcam" autoplay playsinline></video>
+        <video id="webcam" autoplay playsinline muted></video>
         <canvas id="output_canvas"></canvas>
     </div>
     <div id="status-box">
         <div class="state-title" style="color:#00ffcc">INITIALIZING ENGINE...</div>
-        <div class="metrics-line">Loading FaceMesh & Vision Core</div>
-        <div class="action-line">Calibrating Monitoring Stream</div>
+        <div class="metrics-line">Loading MediaPipe & COCO-SSD Models...</div>
+        <div class="action-line">Status: Calibrating Driver Feed</div>
     </div>
 
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
+        const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
         const statusBox = document.getElementById('status-box');
 
+        // Dedicated canvas for extracting raw RGB pixel data
         const sampleCanvas = document.createElement('canvas');
         const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -91,9 +104,10 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        // 3-frame buffer majority vote
+        // 3-Frame Consensus Buffer to smooth false positives
         let seatbeltBuffer = [false, false, false];
 
+        // 1. Load Object Detector for State 5 (Phone Use)
         cocoSsd.load().then(model => {
             cocoModel = model;
             detectPhone();
@@ -104,11 +118,12 @@
                 try {
                     const predictions = await cocoModel.detect(videoElement);
                     phoneDetected = predictions.some(p => p.class === 'cell phone' && p.score > 0.40);
-                } catch(e) {}
+                } catch (e) {}
             }
             setTimeout(detectPhone, 500);
         }
 
+        // 2. Math Calculation Utilities
         function getDistance(p1, p2) {
             return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
         }
@@ -127,29 +142,35 @@
             return vertical / horizontal;
         }
 
-        // --- ACCURATE SEATBELT STRAP INTERSECTION SAMPLING ---
+        // 3. Torso-Relative Dynamic Seatbelt Sampling Core
         function checkSeatbeltFastened(landmarks, w, h) {
-            if (!landmarks || landmarks.length < 153) return false;
+            if (!landmarks || landmarks.length < 455) return false;
 
             if (sampleCanvas.width !== w || sampleCanvas.height !== h) {
                 sampleCanvas.width = w;
                 sampleCanvas.height = h;
             }
 
+            // Copy raw video frame before HUD rendering
             sampleCtx.drawImage(videoElement, 0, 0, w, h);
 
             const chin = landmarks[152];
-            
-            // Start scan vector lower on neck/chest
+            const leftCheek = landmarks[234];
+            const rightCheek = landmarks[454];
+
+            // Face width dynamic scale factor
+            const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
+
+            // Start vector directly below chin on mid-chest (lowered by 1.8x face width)
             const startX = Math.floor(chin.x * w);
-            const startY = Math.floor(chin.y * h) + Math.floor(h * 0.06);
-            
-            // Project vector dynamically across strap path (Right shoulder down to Left hip)
-            const endX = Math.min(w - 10, startX + Math.floor(w * 0.35));
-            const endY = Math.min(h - 10, startY + Math.floor(h * 0.40));
+            const startY = Math.floor(chin.y * h + faceWidth * 1.8);
+
+            // Extend vector diagonally down across torso toward opposite hip
+            const endX = Math.min(w - 10, startX + Math.floor(faceWidth * 2.8));
+            const endY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.2));
 
             let darkStrapHits = 0;
-            const samples = 20;
+            const samples = 25;
 
             try {
                 const imgData = sampleCtx.getImageData(0, 0, w, h).data;
@@ -163,9 +184,11 @@
                         const r = imgData[idx];
                         const g = imgData[idx + 1];
                         const b = imgData[idx + 2];
+
+                        // Perceptual Luminance Formula (ITU-R BT.601)
                         const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
 
-                        // Detect dark strap pixels (Luminance < 110)
+                        // Threshold: Seatbelt strap is dark (Luminance < 110)
                         if (luminance < 110) {
                             darkStrapHits++;
                         }
@@ -175,7 +198,7 @@
                 return false;
             }
 
-            // Strap detected if >= 20% of vector points cross dark strap fabric
+            // Strap marked buckled if >= 20% of torso vector samples hit dark strap fabric
             const rawBeltOn = (darkStrapHits / samples) >= 0.20;
 
             seatbeltBuffer.shift();
@@ -183,11 +206,17 @@
             return seatbeltBuffer.filter(Boolean).length >= 2;
         }
 
+        // 4. MediaPipe Pipeline Setup
         const faceMesh = new FaceMesh({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
         });
 
-        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        faceMesh.setOptions({ 
+            maxNumFaces: 1, 
+            refineLandmarks: true, 
+            minDetectionConfidence: 0.5, 
+            minTrackingConfidence: 0.5 
+        });
 
         faceMesh.onResults((results) => {
             const w = canvasElement.width = videoElement.videoWidth || 640;
@@ -195,6 +224,8 @@
 
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
+            
+            // Draw camera frame natively
             canvasCtx.drawImage(results.image, 0, 0, w, h);
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
@@ -208,44 +239,56 @@
                 
                 const isSeatbeltOn = checkSeatbeltFastened(landmarks, w, h);
 
-                // Draw Visual Scan Vector along diagonal strap trajectory
+                // --- VISUAL TORSO VECTOR DRAWING ---
                 const chin = landmarks[152];
+                const leftCheek = landmarks[234];
+                const rightCheek = landmarks[454];
+                const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
+
                 const sX = chin.x * w;
-                const sY = chin.y * h + (h * 0.06);
-                const eX = Math.min(w - 10, sX + (w * 0.35));
-                const eY = Math.min(h - 10, sY + (h * 0.40));
+                const sY = chin.y * h + (faceWidth * 1.8);
+                const eX = Math.min(w - 10, sX + (faceWidth * 2.8));
+                const eY = Math.min(h - 10, sY + (faceWidth * 3.2));
 
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(sX, sY);
                 canvasCtx.lineTo(eX, eY);
                 canvasCtx.strokeStyle = isSeatbeltOn ? "#00ffcc" : "#ff00ea";
-                canvasCtx.lineWidth = 4;
+                canvasCtx.lineWidth = 5;
                 canvasCtx.stroke();
 
+                // --- 6-STATE DECISION MATRIX ---
                 if (!isSeatbeltOn) {
                     updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
-                    updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Detected Mobile Device in View", "Put Down Mobile Phone", "#ff0055");
+                    updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Mobile Device Tracked in View", "Put Down Mobile Phone", "#ff0055");
                 } else if (ear < 0.17) {
                     updateStatus("STATE 2: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (< 0.17 Threshold)`, "CRITICAL ALERT: Wake Up!", "#ff3300");
                 } else if (mar > 0.50) {
-                    updateStatus("STATE 3: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50 Threshold)`, "Warning: Rest Required", "#ffcc00");
+                    updateStatus("STATE 3: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50 Threshold)`, "Warning: Driver Fatigue / Rest Needed", "#ffcc00");
                 } else {
-                    updateStatus("STATE 1: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)} | Seatbelt: OK`, "Normal Operating Mode", "#00ffcc");
+                    updateStatus("STATE 1: SAFE DRIVING", `EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)} | Seatbelt: FASTENED`, "Normal Operating Mode", "#00ffcc");
                 }
             } else {
                 const currentTime = Date.now();
                 if (facialLossStartTime === 0) {
                     facialLossStartTime = currentTime;
                 } else if (currentTime - facialLossStartTime > 2500) {
-                    updateStatus("STATE 4: CRITICAL FACIAL LOSS", "No Face Tracked > 2.5s", "Focus Eyes on Road Immediately", "#ff0000");
+                    updateStatus("STATE 4: CRITICAL FACIAL LOSS", "Face Un-tracked > 2.5 Seconds", "Focus Eyes on Road Immediately", "#ff0000");
                     canvasCtx.restore();
                     return;
                 }
-                updateStatus("TRACKING FACE...", "Searching for Driver Landmarks", "Monitoring Stream Active", "#aaaaaa");
+                updateStatus("TRACKING FACE...", "Searching for Facial Landmarks", "Monitoring Active", "#aaaaaa");
             }
             canvasCtx.restore();
         });
+
+        // 5. Monocular Camera Setup
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await faceMesh.send({ image: videoElement }); },
+            width: 640, height: 480
+        });
+        camera.start();
 
         function updateStatus(state, metric, action, color) {
             statusBox.style.borderColor = color;
@@ -255,12 +298,6 @@
                 <div class="action-line">Action: ${action}</div>
             `;
         }
-
-        const camera = new Camera(videoElement, {
-            onFrame: async () => { await faceMesh.send({ image: videoElement }); },
-            width: 640, height: 480
-        });
-        camera.start();
     </script>
 </body>
 </html>
