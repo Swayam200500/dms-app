@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-<!-- Cache-Buster-Version: 2.0.4 -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -23,14 +22,7 @@
             min-height: 100vh; 
             padding: 16px 12px;
         }
-        h2 { 
-            margin-bottom: 12px; 
-            font-size: 18px; 
-            color: #38bdf8; 
-            text-transform: uppercase; 
-            letter-spacing: 1px; 
-            text-align: center;
-        }
+        h2 { margin-bottom: 12px; font-size: 18px; color: #38bdf8; text-transform: uppercase; letter-spacing: 1px; text-align: center; }
         
         #container { 
             position: relative; 
@@ -83,8 +75,8 @@
     </div>
     <div id="status-box">
         <div class="state-title" style="color:#00ffcc">INITIALIZING ENGINE...</div>
-        <div class="metrics-line">Loading MediaPipe & COCO-SSD Models...</div>
-        <div class="action-line">Status: Calibrating Driver Feed</div>
+        <div class="metrics-line">Loading MediaPipe & COCO-SSD Engine...</div>
+        <div class="action-line">Calibrating Driver Feed</div>
     </div>
 
     <script>
@@ -100,7 +92,6 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        // 3-Frame Consensus Buffer
         let seatbeltBuffer = [false, false, false];
 
         cocoSsd.load().then(model => {
@@ -136,9 +127,9 @@
             return vertical / horizontal;
         }
 
-        // TORSO-RELATIVE FLIPPED STRAP DETECTOR
+        // --- DUAL-VECTOR BI-DIRECTIONAL SEATBELT SCAN ENGINE ---
         function checkSeatbeltFastened(landmarks, w, h) {
-            if (!landmarks || landmarks.length < 455) return false;
+            if (!landmarks || landmarks.length < 455) return { isFastened: false, activeVec: 1 };
 
             if (sampleCanvas.width !== w || sampleCanvas.height !== h) {
                 sampleCanvas.width = w;
@@ -152,59 +143,62 @@
             const rightCheek = landmarks[454];
 
             const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
-
-            // Start vector directly below chin on mid-chest
             const startX = Math.floor(chin.x * w);
             const startY = Math.floor(chin.y * h + faceWidth * 0.8);
 
-            // Extend vector dynamically towards the opposite side (Left torso in raw camera space)
-            const endX = Math.max(10, startX - Math.floor(faceWidth * 2.8));
-            const endY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
+            // Vector 1 (Right shoulder -> Left hip)
+            const v1EndX = Math.min(w - 10, startX + Math.floor(faceWidth * 2.8));
+            const v1EndY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
 
-            let darkStrapHits = 0;
+            // Vector 2 (Left shoulder -> Right hip)
+            const v2EndX = Math.max(10, startX - Math.floor(faceWidth * 2.8));
+            const v2EndY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
+
             const samples = 25;
+            let hits1 = 0, hits2 = 0;
 
             try {
                 const imgData = sampleCtx.getImageData(0, 0, w, h).data;
 
                 for (let i = 0; i <= samples; i++) {
-                    const sx = Math.floor(startX + (endX - startX) * (i / samples));
-                    const sy = Math.floor(startY + (endY - startY) * (i / samples));
+                    // Sample Vector 1
+                    const sx1 = Math.floor(startX + (v1EndX - startX) * (i / samples));
+                    const sy1 = Math.floor(startY + (v1EndY - startY) * (i / samples));
+                    if (sx1 >= 0 && sx1 < w && sy1 >= 0 && sy1 < h) {
+                        const idx1 = (sy1 * w + sx1) * 4;
+                        const lum1 = 0.299 * imgData[idx1] + 0.587 * imgData[idx1+1] + 0.114 * imgData[idx1+2];
+                        if (lum1 < 120) hits1++;
+                    }
 
-                    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
-                        const idx = (sy * w + sx) * 4;
-                        const r = imgData[idx];
-                        const g = imgData[idx + 1];
-                        const b = imgData[idx + 2];
-
-                        const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
-
-                        if (luminance < 110) {
-                            darkStrapHits++;
-                        }
+                    // Sample Vector 2
+                    const sx2 = Math.floor(startX + (v2EndX - startX) * (i / samples));
+                    const sy2 = Math.floor(startY + (v2EndY - startY) * (i / samples));
+                    if (sx2 >= 0 && sx2 < w && sy2 >= 0 && sy2 < h) {
+                        const idx2 = (sy2 * w + sx2) * 4;
+                        const lum2 = 0.299 * imgData[idx2] + 0.587 * imgData[idx2+1] + 0.114 * imgData[idx2+2];
+                        if (lum2 < 120) hits2++;
                     }
                 }
             } catch (e) {
-                return false;
+                return { isFastened: false, activeVec: 1 };
             }
 
-            const rawBeltOn = (darkStrapHits / samples) >= 0.20;
+            const rawV1On = (hits1 / samples) >= 0.18;
+            const rawV2On = (hits2 / samples) >= 0.18;
+            const rawBeltOn = rawV1On || rawV2On;
 
             seatbeltBuffer.shift();
             seatbeltBuffer.push(rawBeltOn);
-            return seatbeltBuffer.filter(Boolean).length >= 2;
+            const isFastened = seatbeltBuffer.filter(Boolean).length >= 2;
+
+            return { isFastened, activeVec: rawV1On ? 1 : 2 };
         }
 
         const faceMesh = new FaceMesh({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
         });
 
-        faceMesh.setOptions({ 
-            maxNumFaces: 1, 
-            refineLandmarks: true, 
-            minDetectionConfidence: 0.5, 
-            minTrackingConfidence: 0.5 
-        });
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
         faceMesh.onResults((results) => {
             const w = canvasElement.width = videoElement.videoWidth || 640;
@@ -212,7 +206,6 @@
 
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
-            
             canvasCtx.drawImage(results.image, 0, 0, w, h);
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
@@ -224,9 +217,9 @@
                 const ear = (leftEAR + rightEAR) / 2.0;
                 const mar = calculateMAR(landmarks);
                 
-                const isSeatbeltOn = checkSeatbeltFastened(landmarks, w, h);
+                const { isFastened, activeVec } = checkSeatbeltFastened(landmarks, w, h);
 
-                // DRAW VISUAL VECTOR LINE ACROSS CORRECT MIRRORED ANGLE
+                // Draw Dynamic Line directly matching the physical strap trajectory
                 const chin = landmarks[152];
                 const leftCheek = landmarks[234];
                 const rightCheek = landmarks[454];
@@ -234,17 +227,18 @@
 
                 const sX = chin.x * w;
                 const sY = chin.y * h + (faceWidth * 0.8);
-                const eX = Math.max(10, sX - (faceWidth * 2.8));
+                const offset = (activeVec === 1 ? -1 : 1) * Math.floor(faceWidth * 2.8);
+                const eX = Math.min(w - 10, Math.max(10, sX + offset));
                 const eY = Math.min(h - 10, sY + (faceWidth * 3.5));
 
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(sX, sY);
                 canvasCtx.lineTo(eX, eY);
-                canvasCtx.strokeStyle = isSeatbeltOn ? "#00ffcc" : "#ff00ea";
+                canvasCtx.strokeStyle = isFastened ? "#00ffcc" : "#ff00ea";
                 canvasCtx.lineWidth = 5;
                 canvasCtx.stroke();
 
-                if (!isSeatbeltOn) {
+                if (!isFastened) {
                     updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
                     updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Mobile Device Tracked in View", "Put Down Mobile Phone", "#ff0055");
