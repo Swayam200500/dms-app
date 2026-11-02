@@ -1,11 +1,11 @@
 <!DOCTYPE html>
+<!-- Cache-Buster-Version: 2.0.4 -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Driver Monitoring System</title>
     <link rel="manifest" href="manifest.json">
-    <!-- MediaPipe & TensorFlow CDN Dependencies -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
@@ -32,7 +32,6 @@
             text-align: center;
         }
         
-        /* LOCKED ASPECT RATIO CONTAINER — PREVENTS LAYOUT SHIFT */
         #container { 
             position: relative; 
             width: 100%; 
@@ -46,7 +45,6 @@
             flex-shrink: 0;
         }
         
-        /* UN-STRETCHED PROPORTIONAL CAMERA DISPLAY */
         video, canvas { 
             position: absolute; 
             top: 0; 
@@ -58,12 +56,11 @@
             transform: scaleX(-1); 
         }
         
-        /* RIGID STATUS BOX — PREVENTS CRASH-LIKE UI JUMPING */
         #status-box { 
             margin-top: 14px; 
             width: 100%; 
             max-width: 500px; 
-            height: 115px; /* Locked fixed height */
+            height: 115px; 
             padding: 14px 16px; 
             border-radius: 8px; 
             background: #1e293b; 
@@ -96,7 +93,6 @@
         const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
         const statusBox = document.getElementById('status-box');
 
-        // Dedicated canvas for extracting raw RGB pixel data
         const sampleCanvas = document.createElement('canvas');
         const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -104,10 +100,9 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        // 3-Frame Consensus Buffer to smooth false positives
+        // 3-Frame Consensus Buffer
         let seatbeltBuffer = [false, false, false];
 
-        // 1. Load Object Detector for State 5 (Phone Use)
         cocoSsd.load().then(model => {
             cocoModel = model;
             detectPhone();
@@ -123,7 +118,6 @@
             setTimeout(detectPhone, 500);
         }
 
-        // 2. Math Calculation Utilities
         function getDistance(p1, p2) {
             return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
         }
@@ -142,7 +136,7 @@
             return vertical / horizontal;
         }
 
-        // 3. Torso-Relative Dynamic Seatbelt Sampling Core
+        // TORSO-RELATIVE FLIPPED STRAP DETECTOR
         function checkSeatbeltFastened(landmarks, w, h) {
             if (!landmarks || landmarks.length < 455) return false;
 
@@ -151,23 +145,21 @@
                 sampleCanvas.height = h;
             }
 
-            // Copy raw video frame before HUD rendering
             sampleCtx.drawImage(videoElement, 0, 0, w, h);
 
             const chin = landmarks[152];
             const leftCheek = landmarks[234];
             const rightCheek = landmarks[454];
 
-            // Face width dynamic scale factor
             const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
 
-            // Start vector directly below chin on mid-chest (lowered by 1.8x face width)
+            // Start vector directly below chin on mid-chest
             const startX = Math.floor(chin.x * w);
-            const startY = Math.floor(chin.y * h + faceWidth * 1.8);
+            const startY = Math.floor(chin.y * h + faceWidth * 0.8);
 
-            // Extend vector diagonally down across torso toward opposite hip
-            const endX = Math.min(w - 10, startX + Math.floor(faceWidth * 2.8));
-            const endY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.2));
+            // Extend vector dynamically towards the opposite side (Left torso in raw camera space)
+            const endX = Math.max(10, startX - Math.floor(faceWidth * 2.8));
+            const endY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
 
             let darkStrapHits = 0;
             const samples = 25;
@@ -185,10 +177,8 @@
                         const g = imgData[idx + 1];
                         const b = imgData[idx + 2];
 
-                        // Perceptual Luminance Formula (ITU-R BT.601)
                         const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
 
-                        // Threshold: Seatbelt strap is dark (Luminance < 110)
                         if (luminance < 110) {
                             darkStrapHits++;
                         }
@@ -198,7 +188,6 @@
                 return false;
             }
 
-            // Strap marked buckled if >= 20% of torso vector samples hit dark strap fabric
             const rawBeltOn = (darkStrapHits / samples) >= 0.20;
 
             seatbeltBuffer.shift();
@@ -206,7 +195,6 @@
             return seatbeltBuffer.filter(Boolean).length >= 2;
         }
 
-        // 4. MediaPipe Pipeline Setup
         const faceMesh = new FaceMesh({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
         });
@@ -225,7 +213,6 @@
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
             
-            // Draw camera frame natively
             canvasCtx.drawImage(results.image, 0, 0, w, h);
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
@@ -239,16 +226,16 @@
                 
                 const isSeatbeltOn = checkSeatbeltFastened(landmarks, w, h);
 
-                // --- VISUAL TORSO VECTOR DRAWING ---
+                // DRAW VISUAL VECTOR LINE ACROSS CORRECT MIRRORED ANGLE
                 const chin = landmarks[152];
                 const leftCheek = landmarks[234];
                 const rightCheek = landmarks[454];
                 const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
 
                 const sX = chin.x * w;
-                const sY = chin.y * h + (faceWidth * 1.8);
-                const eX = Math.min(w - 10, sX + (faceWidth * 2.8));
-                const eY = Math.min(h - 10, sY + (faceWidth * 3.2));
+                const sY = chin.y * h + (faceWidth * 0.8);
+                const eX = Math.max(10, sX - (faceWidth * 2.8));
+                const eY = Math.min(h - 10, sY + (faceWidth * 3.5));
 
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(sX, sY);
@@ -257,7 +244,6 @@
                 canvasCtx.lineWidth = 5;
                 canvasCtx.stroke();
 
-                // --- 6-STATE DECISION MATRIX ---
                 if (!isSeatbeltOn) {
                     updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
@@ -283,7 +269,6 @@
             canvasCtx.restore();
         });
 
-        // 5. Monocular Camera Setup
         const camera = new Camera(videoElement, {
             onFrame: async () => { await faceMesh.send({ image: videoElement }); },
             width: 640, height: 480
