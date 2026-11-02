@@ -75,8 +75,8 @@
     </div>
     <div id="status-box">
         <div class="state-title" style="color:#00ffcc">INITIALIZING ENGINE...</div>
-        <div class="metrics-line">Loading MediaPipe & COCO-SSD Engine...</div>
-        <div class="action-line">Calibrating Driver Feed</div>
+        <div class="metrics-line">Loading MediaPipe & Vision Core...</div>
+        <div class="action-line">Status: Calibrating Stream</div>
     </div>
 
     <script>
@@ -92,7 +92,9 @@
         let phoneDetected = false;
         let cocoModel = null;
 
-        let seatbeltBuffer = [false, false, false];
+        // Temporal Filters
+        let seatbeltHistory = [false, false, false, false, false];
+        let lowEarFrameCount = 0;
 
         cocoSsd.load().then(model => {
             cocoModel = model;
@@ -106,7 +108,7 @@
                     phoneDetected = predictions.some(p => p.class === 'cell phone' && p.score > 0.40);
                 } catch (e) {}
             }
-            setTimeout(detectPhone, 500);
+            setTimeout(detectPhone, 400);
         }
 
         function getDistance(p1, p2) {
@@ -127,9 +129,9 @@
             return vertical / horizontal;
         }
 
-        // --- DUAL-VECTOR BI-DIRECTIONAL SEATBELT SCAN ENGINE ---
+        // --- CONTRAST-DELTA SEATBELT ENGINE ---
         function checkSeatbeltFastened(landmarks, w, h) {
-            if (!landmarks || landmarks.length < 455) return { isFastened: false, activeVec: 1 };
+            if (!landmarks || landmarks.length < 455) return { isFastened: false, vectorCoords: null };
 
             if (sampleCanvas.width !== w || sampleCanvas.height !== h) {
                 sampleCanvas.width = w;
@@ -141,57 +143,54 @@
             const chin = landmarks[152];
             const leftCheek = landmarks[234];
             const rightCheek = landmarks[454];
-
             const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
+
+            // Start vector safely below collar area (1.8x face width down from chin)
             const startX = Math.floor(chin.x * w);
-            const startY = Math.floor(chin.y * h + faceWidth * 0.8);
+            const startY = Math.floor(chin.y * h + faceWidth * 1.8);
 
-            // Vector 1 (Right shoulder -> Left hip)
-            const v1EndX = Math.min(w - 10, startX + Math.floor(faceWidth * 2.8));
-            const v1EndY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
+            // Diagonal vector across chest
+            const endX = Math.max(10, startX - Math.floor(faceWidth * 3.0));
+            const endY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
 
-            // Vector 2 (Left shoulder -> Right hip)
-            const v2EndX = Math.max(10, startX - Math.floor(faceWidth * 2.8));
-            const v2EndY = Math.min(h - 10, startY + Math.floor(faceWidth * 3.5));
-
-            const samples = 25;
-            let hits1 = 0, hits2 = 0;
+            const samples = 20;
+            let darkStrapHits = 0;
 
             try {
                 const imgData = sampleCtx.getImageData(0, 0, w, h).data;
 
-                for (let i = 0; i <= samples; i++) {
-                    // Sample Vector 1
-                    const sx1 = Math.floor(startX + (v1EndX - startX) * (i / samples));
-                    const sy1 = Math.floor(startY + (v1EndY - startY) * (i / samples));
-                    if (sx1 >= 0 && sx1 < w && sy1 >= 0 && sy1 < h) {
-                        const idx1 = (sy1 * w + sx1) * 4;
-                        const lum1 = 0.299 * imgData[idx1] + 0.587 * imgData[idx1+1] + 0.114 * imgData[idx1+2];
-                        if (lum1 < 120) hits1++;
-                    }
+                // Sample baseline shirt brightness (offset to the right of startX)
+                const bgX = Math.min(w - 1, startX + Math.floor(faceWidth * 1.0));
+                const bgY = Math.min(h - 1, startY);
+                const bgIdx = (bgY * w + bgX) * 4;
+                const bgLuminance = 0.299 * imgData[bgIdx] + 0.587 * imgData[bgIdx+1] + 0.114 * imgData[bgIdx+2];
 
-                    // Sample Vector 2
-                    const sx2 = Math.floor(startX + (v2EndX - startX) * (i / samples));
-                    const sy2 = Math.floor(startY + (v2EndY - startY) * (i / samples));
-                    if (sx2 >= 0 && sx2 < w && sy2 >= 0 && sy2 < h) {
-                        const idx2 = (sy2 * w + sx2) * 4;
-                        const lum2 = 0.299 * imgData[idx2] + 0.587 * imgData[idx2+1] + 0.114 * imgData[idx2+2];
-                        if (lum2 < 120) hits2++;
+                for (let i = 0; i <= samples; i++) {
+                    const sx = Math.floor(startX + (endX - startX) * (i / samples));
+                    const sy = Math.floor(startY + (endY - startY) * (i / samples));
+
+                    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+                        const idx = (sy * w + sx) * 4;
+                        const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx+1] + 0.114 * imgData[idx+2];
+
+                        // Fastened check: Pixel is dark AND significantly darker than shirt baseline
+                        if (lum < 95 || (bgLuminance - lum > 35)) {
+                            darkStrapHits++;
+                        }
                     }
                 }
             } catch (e) {
-                return { isFastened: false, activeVec: 1 };
+                return { isFastened: false, vectorCoords: null };
             }
 
-            const rawV1On = (hits1 / samples) >= 0.18;
-            const rawV2On = (hits2 / samples) >= 0.18;
-            const rawBeltOn = rawV1On || rawV2On;
+            const rawBeltOn = (darkStrapHits / samples) >= 0.25;
 
-            seatbeltBuffer.shift();
-            seatbeltBuffer.push(rawBeltOn);
-            const isFastened = seatbeltBuffer.filter(Boolean).length >= 2;
+            // 5-frame rolling window (3 out of 5 frames required to switch state)
+            seatbeltHistory.shift();
+            seatbeltHistory.push(rawBeltOn);
+            const isFastened = seatbeltHistory.filter(Boolean).length >= 3;
 
-            return { isFastened, activeVec: rawV1On ? 1 : 2 };
+            return { isFastened, vectorCoords: { sX: startX, sY: startY, eX: endX, eY: endY } };
         }
 
         const faceMesh = new FaceMesh({
@@ -216,34 +215,34 @@
                 const rightEAR = calculateEAR(landmarks, false);
                 const ear = (leftEAR + rightEAR) / 2.0;
                 const mar = calculateMAR(landmarks);
-                
-                const { isFastened, activeVec } = checkSeatbeltFastened(landmarks, w, h);
 
-                // Draw Dynamic Line directly matching the physical strap trajectory
-                const chin = landmarks[152];
-                const leftCheek = landmarks[234];
-                const rightCheek = landmarks[454];
-                const faceWidth = Math.abs(rightCheek.x - leftCheek.x) * w;
+                // Temporal EAR Filter for Microsleep
+                if (ear < 0.16) {
+                    lowEarFrameCount++;
+                } else {
+                    lowEarFrameCount = 0;
+                }
+                const isDrowsy = lowEarFrameCount >= 8; // Must sustain low EAR for ~8 frames
 
-                const sX = chin.x * w;
-                const sY = chin.y * h + (faceWidth * 0.8);
-                const offset = (activeVec === 1 ? -1 : 1) * Math.floor(faceWidth * 2.8);
-                const eX = Math.min(w - 10, Math.max(10, sX + offset));
-                const eY = Math.min(h - 10, sY + (faceWidth * 3.5));
+                const { isFastened, vectorCoords } = checkSeatbeltFastened(landmarks, w, h);
 
-                canvasCtx.beginPath();
-                canvasCtx.moveTo(sX, sY);
-                canvasCtx.lineTo(eX, eY);
-                canvasCtx.strokeStyle = isFastened ? "#00ffcc" : "#ff00ea";
-                canvasCtx.lineWidth = 5;
-                canvasCtx.stroke();
+                // Draw Visual Overlay Line
+                if (vectorCoords) {
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(vectorCoords.sX, vectorCoords.sY);
+                    canvasCtx.lineTo(vectorCoords.eX, vectorCoords.eY);
+                    canvasCtx.strokeStyle = isFastened ? "#00ffcc" : "#ff00ea";
+                    canvasCtx.lineWidth = 5;
+                    canvasCtx.stroke();
+                }
 
+                // Decision Hierarchy Engine
                 if (!isFastened) {
                     updateStatus("STATE 6: NO SEATBELT DETECTED", `Strap Scan Failed | EAR: ${ear.toFixed(2)} | MAR: ${mar.toFixed(2)}`, "Fasten Seatbelt Across Torso", "#ff00ea");
                 } else if (phoneDetected) {
                     updateStatus("STATE 5: DISTRACTED (PHONE USE)", "Mobile Device Tracked in View", "Put Down Mobile Phone", "#ff0055");
-                } else if (ear < 0.17) {
-                    updateStatus("STATE 2: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (< 0.17 Threshold)`, "CRITICAL ALERT: Wake Up!", "#ff3300");
+                } else if (isDrowsy) {
+                    updateStatus("STATE 2: MICROSLEEP DETECTED", `EAR = ${ear.toFixed(2)} (Sustained Drowsiness)`, "CRITICAL ALERT: Wake Up!", "#ff3300");
                 } else if (mar > 0.50) {
                     updateStatus("STATE 3: YAWNING DETECTED", `MAR = ${mar.toFixed(2)} (> 0.50 Threshold)`, "Warning: Driver Fatigue / Rest Needed", "#ffcc00");
                 } else {
